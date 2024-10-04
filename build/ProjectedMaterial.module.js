@@ -92,6 +92,15 @@ class ProjectedMaterial extends THREE.MeshPhysicalMaterial {
       _classPrivateFieldLooseBase(this, _saveDimensions)[_saveDimensions]();
     }
   }
+  get depthMap() {
+    return this.uniforms.depthMap.value;
+  }
+  set depthMap(depthMap) {
+    if (!depthMap?.isTexture) {
+      throw new Error('Invalid texture set to the ProjectedMaterial');
+    }
+    this.uniforms.depthMap.value = depthMap;
+  }
   get textureScale() {
     return _classPrivateFieldLooseBase(this, _textureScale)[_textureScale];
   }
@@ -129,6 +138,7 @@ class ProjectedMaterial extends THREE.MeshPhysicalMaterial {
       textureOffset = new THREE.Vector2(),
       backgroundOpacity = 1,
       cover = false,
+      depthMap = null,
       ...options
     } = _temp === void 0 ? {} : _temp;
     if (!texture.isTexture) {
@@ -220,6 +230,9 @@ class ProjectedMaterial extends THREE.MeshPhysicalMaterial {
       },
       textureOffset: {
         value: textureOffset
+      },
+      depthMap: {
+        value: depthMap
       }
     };
     this.onBeforeCompile = shader => {
@@ -228,6 +241,9 @@ class ProjectedMaterial extends THREE.MeshPhysicalMaterial {
       shader.uniforms = this.uniforms;
       if (this.camera.isOrthographicCamera) {
         shader.defines.ORTHOGRAPHIC = '';
+      }
+      if (depthMap) {
+        shader.defines.STOP_PROPAGATION = '';
       }
       shader.vertexShader = monkeyPatch(shader.vertexShader, {
         header: /* glsl */`
@@ -269,6 +285,7 @@ class ProjectedMaterial extends THREE.MeshPhysicalMaterial {
       shader.fragmentShader = monkeyPatch(shader.fragmentShader, {
         header: /* glsl */`
           uniform sampler2D projectedTexture;
+          uniform sampler2D depthMap;
           uniform bool isTextureLoaded;
           uniform bool isTextureProjected;
           uniform float backgroundOpacity;
@@ -277,6 +294,7 @@ class ProjectedMaterial extends THREE.MeshPhysicalMaterial {
           uniform float widthScaled;
           uniform float heightScaled;
           uniform vec2 textureOffset;
+          uniform mat4 projectionMatrixCamera;
 
           varying vec3 vSavedNormal;
           varying vec4 vTexCoords;
@@ -293,6 +311,9 @@ class ProjectedMaterial extends THREE.MeshPhysicalMaterial {
           float w = max(vTexCoords.w, 0.0);
 
           vec2 uv = (vTexCoords.xy / w) * 0.5 + 0.5;
+          #ifdef STOP_PROPAGATION
+          vec2 uvDepthMap = uv;
+          #endif
 
           uv += textureOffset;
 
@@ -312,12 +333,30 @@ class ProjectedMaterial extends THREE.MeshPhysicalMaterial {
           float dotProduct = dot(vSavedNormal, projectorDirection);
           bool isFacingProjector = dotProduct > 0.0000001;
 
+          bool isInShadow = false;
+          #ifdef STOP_PROPAGATION
+            vec4 depthMapColor = texture2D(depthMap, uvDepthMap);
+
+            float depth = depthMapColor.x;
+
+            #ifdef ORTHOGRAPHIC
+              float z = (vTexCoords.z + 1.0) / 2.0;
+              isInShadow = depth < z - 0.001 || z < 0.0 || z > 1.0;
+            #else
+              float z_ndc = 2.0 * depth - 1.0;
+
+              float a = projectionMatrixCamera[2][2];
+              float b = projectionMatrixCamera[3][2];
+              float z_eye = b / (a + z_ndc);
+
+              isInShadow = vTexCoords.w > z_eye + 0.01;
+            #endif
+          #endif
 
           vec4 diffuseColor = vec4(diffuse, opacity * backgroundOpacity);
 
-          if (isFacingProjector && isInTexture && isTextureLoaded && isTextureProjected) {
+          if (isFacingProjector && isInTexture && isTextureLoaded && isTextureProjected && !isInShadow) {
             vec4 textureColor = texture2D(projectedTexture, uv);
-
             // apply the material opacity
             textureColor.a *= opacity;
 
