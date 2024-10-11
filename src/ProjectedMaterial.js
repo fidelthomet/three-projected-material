@@ -157,6 +157,7 @@ export default class ProjectedMaterial extends THREE.MeshPhysicalMaterial {
       heightScaled: { value: heightScaled },
       textureOffset: { value: textureOffset },
       depthMap: { value: depthMap },
+      isOrthographicCamera: { value: this.camera.isOrthographicCamera },
     }
 
     this.onBeforeCompile = (shader) => {
@@ -164,9 +165,9 @@ export default class ProjectedMaterial extends THREE.MeshPhysicalMaterial {
       Object.assign(this.uniforms, shader.uniforms)
       shader.uniforms = this.uniforms
 
-      if (this.camera.isOrthographicCamera) {
-        shader.defines.ORTHOGRAPHIC = ''
-      }
+      // if (this.camera.isOrthographicCamera) {
+      //   shader.defines.ORTHOGRAPHIC = ''
+      // }
 
       if (depthMap) {
         shader.defines.STOP_PROPAGATION = ''
@@ -176,6 +177,7 @@ export default class ProjectedMaterial extends THREE.MeshPhysicalMaterial {
         header: /* glsl */ `
           uniform mat4 viewMatrixCamera;
           uniform mat4 projectionMatrixCamera;
+          uniform bool isOrthographicCamera;
 
           #ifdef USE_INSTANCING
           attribute vec4 savedModelMatrix0;
@@ -188,9 +190,9 @@ export default class ProjectedMaterial extends THREE.MeshPhysicalMaterial {
 
           varying vec3 vSavedNormal;
           varying vec4 vTexCoords;
-          #ifndef ORTHOGRAPHIC
+          // #ifndef ORTHOGRAPHIC
           varying vec4 vWorldPosition;
-          #endif
+          // #endif
         `,
         main: /* glsl */ `
           #ifdef USE_INSTANCING
@@ -204,9 +206,11 @@ export default class ProjectedMaterial extends THREE.MeshPhysicalMaterial {
 
           vSavedNormal = mat3(savedModelMatrix) * normal;
           vTexCoords = projectionMatrixCamera * viewMatrixCamera * savedModelMatrix * vec4(position, 1.0);
-          #ifndef ORTHOGRAPHIC
-          vWorldPosition = savedModelMatrix * vec4(position, 1.0);
-          #endif
+          // #ifndef ORTHOGRAPHIC
+          if (!isOrthographicCamera) {
+            vWorldPosition = savedModelMatrix * vec4(position, 1.0);
+          }
+          // #endif
         `,
       })
 
@@ -223,12 +227,13 @@ export default class ProjectedMaterial extends THREE.MeshPhysicalMaterial {
           uniform float heightScaled;
           uniform vec2 textureOffset;
           uniform mat4 projectionMatrixCamera;
+          uniform bool isOrthographicCamera;
 
           varying vec3 vSavedNormal;
           varying vec4 vTexCoords;
-          #ifndef ORTHOGRAPHIC
+          // #ifndef ORTHOGRAPHIC
           varying vec4 vWorldPosition;
-          #endif
+          // #endif
 
           float mapRange(float value, float min1, float max1, float min2, float max2) {
             return min2 + (value - min1) * (max2 - min2) / (max1 - min1);
@@ -253,12 +258,14 @@ export default class ProjectedMaterial extends THREE.MeshPhysicalMaterial {
           bool isInTexture = (max(uv.x, uv.y) <= 1.0 && min(uv.x, uv.y) >= 0.0);
 
           // this makes sure we don't render also the back of the object
-          #ifdef ORTHOGRAPHIC
-          vec3 projectorDirection = projDirection;
-          #else
-          vec3 projectorDirection = normalize(projPosition - vWorldPosition.xyz);
-          #endif
+          vec3 projectorDirection;
+          if (isOrthographicCamera) {
+            projectorDirection = projDirection;
+          } else {
+            projectorDirection = normalize(projPosition - vWorldPosition.xyz);
+          }
           float dotProduct = dot(vSavedNormal, projectorDirection);
+
           bool isFacingProjector = dotProduct > 0.0000001;
 
           bool isInShadow = false;
@@ -267,18 +274,20 @@ export default class ProjectedMaterial extends THREE.MeshPhysicalMaterial {
 
             float depth = depthMapColor.x;
 
-            #ifdef ORTHOGRAPHIC
+            if (isOrthographicCamera) {
               float z = (vTexCoords.z + 1.0) / 2.0;
               isInShadow = depth < z - 0.001 || z < 0.0 || z > 1.0;
-            #else
+            } else {
               float z_ndc = 2.0 * depth - 1.0;
 
               float a = projectionMatrixCamera[2][2];
               float b = projectionMatrixCamera[3][2];
               float z_eye = b / (a + z_ndc);
 
-              isInShadow = vTexCoords.w > z_eye + 0.01;
-            #endif
+              isInShadow = vTexCoords.w > z_eye + 0.1 || depth == 1.0;
+              // isInShadow = vTexCoords.w > 50.0;
+              // isInShadow = depth > 0.98;
+            }
           #endif
 
           vec4 diffuseColor = vec4(diffuse, opacity * backgroundOpacity);
@@ -345,7 +354,7 @@ export default class ProjectedMaterial extends THREE.MeshPhysicalMaterial {
     this.uniforms.viewMatrixCamera.value.copy(viewMatrixCamera)
     this.uniforms.projectionMatrixCamera.value.copy(projectionMatrixCamera)
     this.uniforms.projPosition.value.setFromMatrixPosition(modelMatrixCamera)
-    this.uniforms.projDirection.value.set(0, 0, 1).applyMatrix4(modelMatrixCamera)
+    this.uniforms.projDirection.value.set(0, 0, 1).transformDirection(modelMatrixCamera)
 
     // tell the shader we've projected
     this.uniforms.isTextureProjected.value = true
